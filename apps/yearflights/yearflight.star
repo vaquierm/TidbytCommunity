@@ -24,8 +24,8 @@ MAP_HEIGHT = 32.0
 
 def main(config):
     flight_counter = 1
-    departure_airport_code = json.decode(config.str("departure" + str(flight_counter), DEFAULT_DEPARTURE_AIRPORT))["value"]
-    arrival_airport_code = json.decode(config.str("arrival" + str(flight_counter), DEFAULT_ARRIVAL_AIRPORT))["value"]
+    departure_airport_code = json.decode(config.str("departure", DEFAULT_DEPARTURE_AIRPORT))["value"]
+    arrival_airport_code = json.decode(config.str("arrival", DEFAULT_ARRIVAL_AIRPORT))["value"]
     departure_airport = AIRPORTS[departure_airport_code]
     arrival_airport = AIRPORTS[arrival_airport_code]
     departure_longitude = departure_airport["longitude"]
@@ -35,7 +35,7 @@ def main(config):
     departure_x_pixel, departure_y_pixel = latlon_to_XYPixels(departure_latitude, departure_longitude)
     arrival_x_pixel, arrival_y_pixel = latlon_to_XYPixels(arrival_latitude, arrival_longitude)
 
-    flight_date = config.str("flight_date" + str(flight_counter), str(time.now()))[:7]
+    flight_date = config.str("flight_date", str(time.now()))[:7]
     date_components = flight_date.split("-")
     year = date_components[0]
     month = MONTH_ABREVIATIONS[int(date_components[1])-1]
@@ -412,28 +412,27 @@ def latitude_to_YPixel(latitude):
     # return y_pixel if y_pixel >= 0 else 0
 
 def get_schema():
-    flight_counter = 1
     return schema.Schema(
         version="1",
         fields = [
             schema.Typeahead(
-                id = "departure" + str(flight_counter),
-                name = "Departure Airport " + str(flight_counter),
-                desc = "IATA code for departure airport of trip #" + str(flight_counter),
+                id = "departure",
+                name = "Departure Airport ",
+                desc = "Departure airport of trip",
                 icon = "planeDeparture",
                 handler = airport_search,
             ),
             schema.Typeahead(
-                id = "arrival" + str(flight_counter),
-                name = "Arrival Airport " + str(flight_counter),
-                desc = "IATA code for arrival airport of trip #" + str(flight_counter),
+                id = "arrival",
+                name = "Arrival Airport ",
+                desc = "Arrival airport of trip",
                 icon = "planeArrival",
                 handler = airport_search,
             ),
             schema.DateTime(
-                id = "flight_date" + str(flight_counter),
-                name = "Trip " + str(flight_counter) + " Date",
-                desc = "Date fo trip #" + str(flight_counter) + " (Only the month and year matter)",
+                id = "flight_date",
+                name = "Trip " + " Date",
+                desc = "Date fo trip (Only the month and year matter)",
                 icon = "calendar",
             ),
             schema.Color(
