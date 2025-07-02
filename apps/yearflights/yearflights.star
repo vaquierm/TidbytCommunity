@@ -37,9 +37,9 @@ def main(config):
     month = MONTH_ABREVIATIONS[int(date_components[1])-1]
     date_text = month + year
 
-    text_color = config.str("text_color", "#f00")
-    dep_arr_color = config.str("dep_arr_color", "#0f0")
-    path_color = config.str("path_color", "#f00")
+    text_color = config.str("text_color", "#FF0000")
+    dep_arr_color = config.str("dep_arr_color", "#00FF00")
+    path_color = config.str("path_color", "#FF0000")
 
 
     UIStack = [
@@ -52,12 +52,14 @@ def main(config):
     path_points = great_circle_path_points(departure_latitude, departure_longitude, arrival_latitude, arrival_longitude)
     # Remove redundant points
     path_points = remove_redundant_points(path_points)
-    # Create the subpath frames for the animation
-    line_annimation = line_trace_animation(path_points, 2)
-    # Append points in UI for great circle path
+    # Create text animation for the airports
+    text_marquee, frame_count = airport_codes_text_UI(departure_airport_code, arrival_airport_code, date_text, text_color)
+
+    # Create line annimation
+    line_annimation = get_line_animation(path_points, path_color, frame_count)
     UIStack.append(
         render.Animation(
-            children = [get_flight_line_UI(animation_frame, path_color) for animation_frame in line_annimation]
+            children = line_annimation
         )
     )
 
@@ -66,22 +68,77 @@ def main(config):
     UIStack.append(XYPixel_to_UIPoint(arrival_x_pixel, arrival_y_pixel, dep_arr_color))
 
     # Append UI elements to show departure and arrival airport codes
-    text_marquee, frame_count = airport_codes_text_UI(departure_airport_code, arrival_airport_code, date_text, text_color)
     UIStack.append(text_marquee)
 
     return render.Root(
-        delay = 50,
+        delay = 80,
         show_full_animation=True,
         child = render.Stack(
             children = UIStack
         ),
     )
 
-def get_flight_line_UI(path_points, path_color):
+def get_flight_line_UI(path_points, path_color, blinking_color = ""):
     elements = [XYPixel_to_UIPoint(path_point[0], path_point[1], path_color) for path_point in path_points]
+    last_index = len(elements) - 1
+    if blinking_color != "":
+        elements[last_index] = XYPixel_to_UIPoint(path_points[last_index][0], path_points[last_index][1], blinking_color)
     return render.Stack(
         children = elements
     )
+
+def int_to_hex_alpha(val):
+    hex_chars = "0123456789ABCDEF"
+    high = val // 16
+    low = val % 16
+    return hex_chars[high] + hex_chars[low]
+
+def get_line_animation(points, color, total_frame_count, num_blinks=2):
+    frames = []
+    num_points = len(points)
+
+    if num_points == 0 or total_frame_count == 0:
+        return []
+
+    # Reduce number of blinks if not enough frames, without a loop
+    max_possible_segments = total_frame_count // num_points
+    max_blinks_possible = (max_possible_segments - 1) // 2  # Because total segments = 2*blinks + 1
+    num_blinks = min(num_blinks, max(0, max_blinks_possible))
+
+    total_segments_per_point = num_blinks * 2 + 1
+    frames_per_fade = total_frame_count // (num_points * total_segments_per_point)
+
+    if frames_per_fade == 0:
+        # Not enough frames even for one fade
+        full_frame = get_flight_line_UI(points, color)
+        return [full_frame] * total_frame_count
+
+    for i in range(num_points):
+        current_points = points[:i+1]
+
+        # Perform blinking fades
+        for _ in range(num_blinks):
+            # Fade in
+            for step in range(frames_per_fade):
+                alpha = int(255 * (step + 1) / frames_per_fade)
+                blinking_color = color + int_to_hex_alpha(alpha)
+                frame = get_flight_line_UI(current_points, color, blinking_color)
+                frames.append(frame)
+            # Fade out
+            for step in range(frames_per_fade):
+                alpha = int(255 * (frames_per_fade - step - 1) / frames_per_fade)
+                blinking_color = color + int_to_hex_alpha(alpha)
+                frame = get_flight_line_UI(current_points, color, blinking_color)
+                frames.append(frame)
+
+        # Final fade-in to stay on
+        for step in range(frames_per_fade):
+            alpha = int(255 * (step + 1) / frames_per_fade)
+            blinking_color = color + int_to_hex_alpha(alpha)
+            frame = get_flight_line_UI(current_points, color, blinking_color)
+            frames.append(frame)
+
+    return frames[:total_frame_count]
 
 def line_trace_animation(points, blink_n):
     frames = []
@@ -339,21 +396,21 @@ def get_schema():
                 name = "Flight Text Color",
                 desc = "Color of the text displating flight information.",
                 icon = "brush",
-                default = "#f00",
+                default = "#FF0000",
             ),
             schema.Color(
                 id = "dep_arr_color",
                 name = "Departure and Arrival Airports Color",
                 desc = "Color of the destination and arrival airports.",
                 icon = "brush",
-                default = "#0f0",
+                default = "#00FF00",
             ),
             schema.Color(
                 id = "path_color",
                 name = "Path Color",
                 desc = "Color of path taken by the flight.",
                 icon = "brush",
-                default = "#f00",
+                default = "#FF0000",
             )
         ]
     )
