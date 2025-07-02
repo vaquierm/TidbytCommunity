@@ -1,6 +1,6 @@
 ---
-id: yearflights
-name: YearFlights
-summary: Shows flights
-desc: Shows all your flights for the year.
+id: b9dfccb4-0c47-41fe-9797-42f12947e42f
+name: YearFlight
+summary: Shows flight
+desc: Shows a flight path on world map.
 author: vaquierm

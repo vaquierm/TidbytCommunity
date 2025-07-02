@@ -1,4 +1,597 @@
-  "AAA": {"name": "Anaa", "latitude": -17.3506654, "longitude": -145.51111994065877, "country": "PF", "city": ""},
+"""
+Applet: YearFlights
+Summary: Shos flights
+Description: Shows all your flights for the year.
+Author: vaquierm
+"""
+
+load("encoding/base64.star", "base64")
+load("render.star", "render")
+load("schema.star", "schema")
+load("math.star", "math")
+load("encoding/json.star", "json")
+load("time.star", "time")
+load("re.star", "re")
+
+#\w{3},.*?,(.*?),(-?\d+\.\d+),(-?\d+\.\d+),.*?,.*?,.*?,.*?,(.*?),(.*?),.*\n
+#  "$1": {"name": "$2", "latitude": $3, "longitude": $4, "country": "$5", "city": "$6"}
+
+DEFAULT_DEPARTURE_AIRPORT = "{\"display\":\"CDG\",\"text\":\"CDG\",\"value\":\"CDG\"}"
+DEFAULT_ARRIVAL_AIRPORT = "{\"display\":\"NRT\",\"text\":\"NRT\",\"value\":\"NRT\"}"
+DEFAULT_FLIGHT_DATE = ""
+MAP_WIDTH = 64.0
+MAP_HEIGHT = 32.0
+
+def main(config):
+    flight_counter = 1
+    departure_airport_code = json.decode(config.str("departure" + str(flight_counter), DEFAULT_DEPARTURE_AIRPORT))["value"]
+    arrival_airport_code = json.decode(config.str("arrival" + str(flight_counter), DEFAULT_ARRIVAL_AIRPORT))["value"]
+    departure_airport = AIRPORTS[departure_airport_code]
+    arrival_airport = AIRPORTS[arrival_airport_code]
+    departure_longitude = departure_airport["longitude"]
+    departure_latitude = departure_airport["latitude"]
+    arrival_longitude = arrival_airport["longitude"]
+    arrival_latitude = arrival_airport["latitude"]
+    departure_x_pixel, departure_y_pixel = latlon_to_XYPixels(departure_latitude, departure_longitude)
+    arrival_x_pixel, arrival_y_pixel = latlon_to_XYPixels(arrival_latitude, arrival_longitude)
+
+    flight_date = config.str("flight_date" + str(flight_counter), str(time.now()))[:7]
+    date_components = flight_date.split("-")
+    year = date_components[0]
+    month = MONTH_ABREVIATIONS[int(date_components[1])-1]
+    date_text = month + year
+
+    text_color = config.str("text_color", "#FF0000")
+    dep_arr_color = config.str("dep_arr_color", "#00FF00")
+    path_color = config.str("path_color", "#FF0000")
+    frame_delay = int(config.str("speed", "80"))
+
+    UIStack = [
+        render.Image(
+            MAP
+        )
+    ]
+
+    # Calculate great circle path points
+    path_points = great_circle_path_points(departure_latitude, departure_longitude, arrival_latitude, arrival_longitude)
+    # Remove redundant points
+    path_points = remove_redundant_points(path_points)
+    # Create text animation for the airports
+    text_marquee, frame_count = airport_codes_text_UI(departure_airport_code, arrival_airport_code, date_text, text_color)
+
+    # Create line animation
+    fade_in_out_frame_count = 10
+    frame_count_for_line_animation = frame_count - (fade_in_out_frame_count * 2)
+    departure_arrival_points = [(departure_x_pixel, departure_y_pixel), (arrival_x_pixel, arrival_y_pixel)]
+    line_animation = fade_in_points(departure_arrival_points, dep_arr_color, fade_in_out_frame_count)
+    line_animation_trace = get_line_animation(path_points, path_color, frame_count_for_line_animation)
+    line_animation_trace = stack_frame(line_animation_trace, render.Stack(
+        children = [
+            XYPixel_to_UIPoint(departure_x_pixel, departure_y_pixel, dep_arr_color),
+            XYPixel_to_UIPoint(arrival_x_pixel, arrival_y_pixel, dep_arr_color)
+        ]
+    ))
+    line_animation = line_animation + line_animation_trace
+    full_line_still_frame = render.Stack(
+        children = [get_flight_line_UI(path_points, path_color)] + [
+            XYPixel_to_UIPoint(departure_x_pixel, departure_y_pixel, dep_arr_color),
+            XYPixel_to_UIPoint(arrival_x_pixel, arrival_y_pixel, dep_arr_color)
+        ]
+    )
+    fade_out_dep_arr = fade_out_points(departure_arrival_points, dep_arr_color, fade_in_out_frame_count)
+    fade_out_line = fade_out_points(path_points, path_color, fade_in_out_frame_count)
+    fade_out_animation = [render.Stack(children=[line_frame] + [dep_arr_frame]) for line_frame, dep_arr_frame in zip(fade_out_line, fade_out_dep_arr)]
+
+    line_animation = line_animation + [full_line_still_frame for _ in range(frame_count - len(line_animation) - len(fade_out_animation))]
+    line_animation = line_animation + fade_out_animation
+
+    UIStack.append(
+        render.Animation(
+            children = line_animation
+        )
+    )
+
+    # Append UI elements to show departure and arrival airport codes
+    UIStack.append(text_marquee)
+
+    return render.Root(
+        delay = frame_delay,
+        show_full_animation=True,
+        child = render.Stack(
+            children = UIStack
+        ),
+    )
+
+def stack_frame(frames, element):
+    return [render.Stack(children=[frame] + [element]) for frame in frames]
+
+def get_flight_line_UI(path_points, path_color, blinking_color = "", all_fade=False):
+    elements = [XYPixel_to_UIPoint(path_point[0], path_point[1], blinking_color if all_fade and blinking_color != "" else path_color) for path_point in path_points]
+    last_index = len(elements) - 1
+    if blinking_color != "":
+        elements[last_index] = XYPixel_to_UIPoint(path_points[last_index][0], path_points[last_index][1], blinking_color)
+    return render.Stack(
+        children = elements
+    )
+
+def int_to_hex_alpha(val):
+    hex_chars = "0123456789ABCDEF"
+    high = val // 16
+    low = val % 16
+    return hex_chars[high] + hex_chars[low]
+
+def fade_in_points(points, color, fade_in_frame_count):
+    frames = []
+    for step in range(fade_in_frame_count):
+        alpha = int(255 * (step + 1) / fade_in_frame_count)
+        blinking_color = color + int_to_hex_alpha(alpha)
+        frame = get_flight_line_UI(points, color, blinking_color, True)
+        frames.append(frame)
+    return frames
+
+def fade_out_points(points, color, fade_out_frame_count):
+    frames = []
+    for step in range(fade_out_frame_count):
+        alpha = int(255 * (fade_out_frame_count - step - 1) / fade_out_frame_count)
+        blinking_color = color + int_to_hex_alpha(alpha)
+        frame = get_flight_line_UI(points, color, blinking_color, True)
+        frames.append(frame)
+    return frames
+
+def get_line_animation(points, color, total_frame_count, num_blinks=2):
+    frames = []
+    num_points = len(points)
+
+    if num_points == 0 or total_frame_count == 0:
+        return []
+
+    # Reduce number of blinks if not enough frames, without a loop
+    max_possible_segments = total_frame_count // num_points
+    max_blinks_possible = (max_possible_segments - 1) // 2  # Because total segments = 2*blinks + 1
+    num_blinks = min(num_blinks, max(0, max_blinks_possible))
+
+    total_segments_per_point = num_blinks * 2 + 1
+    frames_per_fade = total_frame_count // (num_points * total_segments_per_point)
+
+    if frames_per_fade == 0:
+        # Not enough frames even for one fade
+        full_frame = get_flight_line_UI(points, color)
+        return [full_frame] * total_frame_count
+
+    for i in range(num_points):
+        current_points = points[:i+1]
+
+        # Perform blinking fades
+        for _ in range(num_blinks):
+            # Fade in
+            for step in range(frames_per_fade):
+                alpha = int(255 * (step + 1) / frames_per_fade)
+                blinking_color = color + int_to_hex_alpha(alpha)
+                frame = get_flight_line_UI(current_points, color, blinking_color)
+                frames.append(frame)
+            # Fade out
+            for step in range(frames_per_fade):
+                alpha = int(255 * (frames_per_fade - step - 1) / frames_per_fade)
+                blinking_color = color + int_to_hex_alpha(alpha)
+                frame = get_flight_line_UI(current_points, color, blinking_color)
+                frames.append(frame)
+
+        # Final fade-in to stay on
+        for step in range(frames_per_fade):
+            alpha = int(255 * (step + 1) / frames_per_fade)
+            blinking_color = color + int_to_hex_alpha(alpha)
+            frame = get_flight_line_UI(current_points, color, blinking_color)
+            frames.append(frame)
+
+    return frames[:total_frame_count]
+
+def line_trace_animation(points, blink_n):
+    frames = []
+    current_path = []
+
+    def copy_arr(arr):
+        return [element for element in arr]
+
+    for pt in points:
+        # Blink n times (each blink consists of ON, OFF)
+        for _ in range(blink_n):
+            current_path_copy = copy_arr(current_path)
+            frames.append(current_path_copy + [pt])  # Blink ON
+            frames.append(current_path_copy)         # Blink OFF
+            frames.append(current_path_copy + [pt])  # Stabilization frame
+
+        # Final stabilization frame: add point permanently
+        current_path.append(pt)
+        frames.append(copy_arr(current_path))
+    
+    return frames
+
+def remove_redundant_points(points):
+    # Step 1: Remove duplicates while preserving order
+    unique_points = []
+    seen = set()
+    for pt in points:
+        if pt not in seen:
+            unique_points.append(pt)
+            seen.add(pt)
+
+    # Step 2: Remove slant points that cause right-angle turns in diagonal movement
+    def is_right_angle_turn(p1, p2, p3):
+        dx1 = p2[0] - p1[0]
+        dy1 = p2[1] - p1[1]
+        dx2 = p3[0] - p2[0]
+        dy2 = p3[1] - p2[1]
+        return (dx1 == 0 and dy1 != 0 and dx2 != 0 and dy2 == 0) or \
+               (dx1 != 0 and dy1 == 0 and dx2 == 0 and dy2 != 0)
+
+    # Manual stack-like reconstruction
+    cleaned_points = []
+    for pt in unique_points:
+        cleaned_points.append(pt)
+        # Try to remove the middle point if a right-angle turn is formed
+        new_cleaned = []
+        for i in range(len(cleaned_points)):
+            if i >= 2:
+                p1 = new_cleaned[-2]
+                p2 = new_cleaned[-1]
+                p3 = cleaned_points[i]
+                if is_right_angle_turn(p1, p2, p3):
+                    # Skip the middle point (p2)
+                    new_cleaned.pop()  # This is allowed, not del
+            new_cleaned.append(cleaned_points[i])
+        cleaned_points = new_cleaned
+
+    return cleaned_points
+
+def XYPixel_to_UIPoint(x, y, color):
+    return render.Padding(
+        child = render.Box(
+            color=color,
+            width=1,
+            height=1
+        ),
+        pad = (x, y, 0, 0)
+    )
+
+def airport_codes_text_UI(departure_code, arrival_code, date_text, color):
+    departure_text_and_arrow = render.Text(
+        content = departure_code + "→",
+        color = color,
+    )
+    arrival_text = render.Text(
+        content = arrival_code + "  " + date_text,
+        color = color,
+    )
+    marquee_text = render.Row(
+        children = [
+            departure_text_and_arrow,
+            render.Box(
+                width = 1
+            ),
+            arrival_text,
+        ]
+    )
+    text_width = departure_text_and_arrow.size()[0] + arrival_text.size()[0] + 1
+    marquee = render.Marquee(
+        offset_start = text_width,
+        offset_end = -text_width,
+        child = marquee_text,
+        width = 64,
+    )
+    frame_count = marquee.frame_count()
+    return (render.Padding(
+        pad = (0, 24, 0, 0),
+        child = marquee
+    ), frame_count)
+
+def date_text_UI(date_text, color):
+    return render.Text(
+        content = date_text,
+        color = color,
+    )
+    
+
+def arrow_UI(color):
+    return render.Padding(
+        pad = (0, 1, 1, 0),
+        child = render.Stack(
+            children = [
+                render.Padding(
+                    pad=(0, 3, 0, 0),
+                    child = render.Box(
+                        color = color,
+                        width = 5,
+                        height = 1
+                    )
+                ),
+                render.Padding(
+                    pad=(3, 2, 0, 0),
+                    child = render.Box(
+                        color = color,
+                        width = 1,
+                        height = 1
+                    )
+                ),
+                render.Padding(
+                    pad=(3, 4, 0, 0),
+                    child = render.Box(
+                        color = color,
+                        width = 1,
+                        height = 1
+                    )
+                ),
+                render.Padding(
+                    pad=(2, 1, 0, 0),
+                    child = render.Box(
+                        color = color,
+                        width = 1,
+                        height = 1
+                    )
+                ),
+                render.Padding(
+                    pad=(2, 5, 0, 0),
+                    child = render.Box(
+                        color = color,
+                        width = 1,
+                        height = 1
+                    )
+                )
+            ]
+        )
+    )
+
+def latlon_to_xyz(latitude, longitude):
+    latitude_rad = math.radians(latitude)
+    longitude_rad = math.radians(longitude)
+    x = math.cos(latitude_rad) * math.cos(longitude_rad)
+    y = math.cos(latitude_rad) * math.sin(longitude_rad)
+    z = math.sin(latitude_rad)
+    return (x, y, z)
+
+def xyz_to_latlon(x, y, z):
+    hyp = math.sqrt(math.pow(x, 2) + math.pow(y, 2))
+    latitude = math.degrees(math.atan2(z, hyp))
+    longitude = math.degrees(math.atan2(y, x))
+    return (latitude, longitude)
+
+def dot(a, b):
+    total = 0
+    for val in [i * j for i, j in zip(a, b)]:
+        total = total + val
+    return total
+
+def normalize(v):
+    sq_sum = 0
+    for val in [math.pow(i, 2) for i in v]:
+        sq_sum = sq_sum + val
+    mag = math.sqrt(sq_sum)
+    return tuple([i / mag for i in v])
+
+def slerp(a, b, t):
+    a = normalize(a)
+    b = normalize(b)
+    omega = math.acos(dot(a, b))
+    if (omega == 0):
+        return a # Same point
+    sin_omega = math.sin(omega)
+    factor1 = math.sin((1 - t) * omega) / sin_omega
+    factor2 = math.sin(t * omega) / sin_omega
+    return tuple([factor1 * ai + factor2 * bi for ai, bi in zip(a, b)])
+
+def great_circle_path_points(latitude1, longitude1, latitude2, longitude2, steps=128):
+    start = latlon_to_xyz(latitude1, longitude1)
+    end = latlon_to_xyz(latitude2, longitude2)
+    points = []
+
+    for i in range(steps + 1):
+        t = i / steps
+        interpolated = slerp(start, end, t)
+        latitude, longitude = xyz_to_latlon(*interpolated)
+        point = latlon_to_XYPixels(latitude, longitude)
+        points.append(point)
+    return points
+
+def latlon_to_XYPixels(latitude, longitude):
+    return (longitude_to_XPixel(longitude), latitude_to_YPixel(latitude))
+
+def longitude_to_XPixel(longitude):
+    x = math.round((longitude+180)*(MAP_WIDTH/360))
+    x_pixel = int(x)
+    return x_pixel
+    # return x_pixel if x_pixel >= 0 else 0
+
+def latitude_to_YPixel(latitude):
+    # convert from degrees to radians
+    latRad = latitude*math.pi/180
+
+    # get y value
+    mercN = math.log(math.tan((math.pi/4)+(latRad/2)), math.e)
+    y = math.round((MAP_HEIGHT/2)-(MAP_WIDTH*mercN/(2*math.pi)))
+    y_pixel = int(y)
+    return y_pixel
+    # return y_pixel if y_pixel >= 0 else 0
+
+def get_schema():
+    flight_counter = 1
+    return schema.Schema(
+        version="1",
+        fields = [
+            schema.Typeahead(
+                id = "departure" + str(flight_counter),
+                name = "Departure Airport " + str(flight_counter),
+                desc = "IATA code for departure airport of trip #" + str(flight_counter),
+                icon = "planeDeparture",
+                handler = airport_search,
+            ),
+            schema.Typeahead(
+                id = "arrival" + str(flight_counter),
+                name = "Arrival Airport " + str(flight_counter),
+                desc = "IATA code for arrival airport of trip #" + str(flight_counter),
+                icon = "planeArrival",
+                handler = airport_search,
+            ),
+            schema.DateTime(
+                id = "flight_date" + str(flight_counter),
+                name = "Trip " + str(flight_counter) + " Date",
+                desc = "Date fo trip #" + str(flight_counter) + " (Only the month and year matter)",
+                icon = "calendar",
+            ),
+            schema.Color(
+                id = "text_color",
+                name = "Flight Text Color",
+                desc = "Color of the text displating flight information.",
+                icon = "brush",
+                default = "#FF0000",
+            ),
+            schema.Color(
+                id = "dep_arr_color",
+                name = "Departure and Arrival Airports Color",
+                desc = "Color of the destination and arrival airports.",
+                icon = "brush",
+                default = "#00FF00",
+            ),
+            schema.Color(
+                id = "path_color",
+                name = "Path Color",
+                desc = "Color of path taken by the flight.",
+                icon = "brush",
+                default = "#FF0000",
+            ),
+            schema.Dropdown(
+                id = "speed",
+                name = "Speed",
+                desc = "Speed of your Tidbyt. This determines how long the animation takes.",
+                icon = "stopwatch",
+                default = "80",
+                options = [
+                    schema.Option(
+                        display = "Slow",
+                        value = "120",
+                    ),
+                    schema.Option(
+                        display = "Normal",
+                        value = "80",
+                    ),
+                    schema.Option(
+                        display = "Fast",
+                        value = "40",
+                    )
+                ],
+            ),
+        ]
+    )
+
+def airport_search(code):
+    valid_options = []
+    for airport, airport_data in AIRPORTS.items():
+        airport_name = airport_data["name"]
+        if airport.startswith(code.upper()) or re.match(code.lower(), airport_name.lower()):
+            display_text = airport
+            if (airport_name != ""):
+                display_text = display_text + " (" + airport_data["name"] + ")"
+            valid_options.append(
+                schema.Option(
+                    display = display_text,
+                    value = airport,
+                )
+            )
+    return valid_options
+
+MONTH_ABREVIATIONS = [
+    "Jan",
+    "Feb",
+    "Mar",
+    "Apr",
+    "May",
+    "Jun",
+    "Jul",
+    "Aug",
+    "Sep",
+    "Oct",
+    "Nov",
+    "Dec"
+]
+
+MAP = base64.decode("""
+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
+b24ANQHYtpcAAAA4dEVYdGljYzpjb3B5cmlnaHQAQ29weXJpZ2h0IChjKSAxOTk4IEhld2xldHQt
+UGFja2FyZCBDb21wYW55+Vd5NwAAACF0RVh0aWNjOmRlc2NyaXB0aW9uAHNSR0IgSUVDNjE5NjYt
+Mi4xV63aRwAAACZ0RVh0aWNjOm1hbnVmYWN0dXJlcgBJRUMgaHR0cDovL3d3dy5pZWMuY2gcfwBM
+AAAAN3RFWHRpY2M6bW9kZWwASUVDIDYxOTY2LTIuMSBEZWZhdWx0IFJHQiBjb2xvdXIgc3BhY2Ug
+LSBzUkdCRFNIqQAAABJ0RVh0dGlmZjpDb21wcmVzc2lvbgA13jRpagAAACN0RVh0dGlmZjpYUmVz
+b2x1dGlvbgA0NzU1NzQ2MjQvMTY3NzcyMTa325+eAAAAI3RFWHR0aWZmOllSZXNvbHV0aW9uADQ3
+NTU3NDYyNC8xNjc3NzIxNou7fJYAAAAodEVYdHhtcDpDcmVhdGVEYXRlADIwMTctMTAtMDJUMTg6
+NTc6NDMrMDE6MDBtx0PdAAAAHnRFWHR4bXA6Q3JlYXRvclRvb2wAUGhvdG9MaW5lMjAuMDIDkUSJ
+AAAAKnRFWHR4bXA6TWV0YWRhdGFEYXRlADIwMTctMTAtMDJUMTg6NTc6NDMrMDE6MDDlnSxaAAAA
+KHRFWHR4bXA6TW9kaWZ5RGF0ZQAyMDE3LTEwLTAyVDE4OjU3OjQzKzAxOjAw2Tl/5AAAAABJRU5E
+rkJggg==
+""")
+
+AIRPORTS = {
+      "AAA": {"name": "Anaa", "latitude": -17.3506654, "longitude": -145.51111994065877, "country": "PF", "city": ""},
   "AAB": {"name": "Arrabury Airport", "latitude": -26.6967835, "longitude": 141.049092, "country": "AU", "city": "Tanbar"},
   "AAC": {"name": "El Arish International Airport", "latitude": 31.0742836, "longitude": 33.829171518733695, "country": "EG", "city": "Arish"},
   "AAD": {"name": "Adado Airport", "latitude": 6.09628635, "longitude": 46.637708371259194, "country": "SO", "city": "Adado"},
@@ -4125,7 +4718,7 @@
   "KLL": {"name": "Levelock", "latitude": 59.12690265, "longitude": -156.86113347994, "country": "US", "city": ""},
   "KLM": {"name": "Kalaleh", "latitude": 37.38468075, "longitude": 55.44509053533892, "country": "IR", "city": "Kalaleh"},
   "KLN": {"name": "Larsen SPB", "latitude": 57.533333, "longitude": -154.0, "country": "US", "city": ""},
-  "KLO": {"name": "Kalibo International Airport", "latitude": 11.6789701, "longitude": 122.3748426278658, "country": "PH", "city": ""Brgy. Nalook"},
+  "KLO": {"name": "Kalibo International Airport", "latitude": 11.6789701, "longitude": 122.3748426278658, "country": "PH", "city": "Brgy. Nalook, kalibo"},
   "KLP": {"name": "Kelp Bay", "latitude": 57.55, "longitude": -134.86667, "country": "US", "city": ""},
   "KLQ": {"name": "Keluang", "latitude": -2.683333, "longitude": 103.9, "country": "ID", "city": "Sekayu"},
   "KLR": {"name": "Kalmar Oland Airport", "latitude": 56.685, "longitude": 16.287222, "country": "SE", "city": "Rinkabyholm"},
@@ -8351,7 +8944,7 @@
   "TYT": {"name": "Treinta-y-Tres", "latitude": -33.266666, "longitude": -54.283333, "country": "UY", "city": "Treinta y Tres"},
   "TYZ": {"name": "Taylor", "latitude": 34.45143875, "longitude": -110.11645561432404, "country": "US", "city": "Taylor"},
   "TZA": {"name": "Municipal", "latitude": 17.51639, "longitude": -88.191666, "country": "BZ", "city": "Belize City"},
-  "TZC": {"name": "Tuscola Area", "latitude": 43.4586785, "longitude": -83.4451618, "country": "00.html"", "city": "America/Detroit"},
+  "TZC": {"name": "Tuscola Area", "latitude": 43.4586785, "longitude": -83.4451618, "country": "US", "city": "Caro"},
   "TZL": {"name": "Tuzla International Airport", "latitude": 44.40972, "longitude": 18.709167, "country": "BA", "city": "Svojat"},
   "TZM": {"name": "Tizimin", "latitude": 21.15550795, "longitude": -88.17237438239351, "country": "MX", "city": "Tizimin"},
   "TZN": {"name": "South Andros", "latitude": 24.159072549999998, "longitude": -77.5913170475257, "country": "BS", "city": "Andros Town"},
@@ -9076,7 +9669,7 @@
   "XGL": {"name": "Granville Lake", "latitude": 56.233334, "longitude": -100.55, "country": "CA", "city": ""},
   "XGN": {"name": "Xangongo", "latitude": -16.7516871, "longitude": 14.9660327, "country": "AO", "city": "Outapi"},
   "XGR": {"name": "Kangiqsualujjuaq Airport", "latitude": 58.5, "longitude": -65.98333, "country": "CA", "city": ""},
-  "XHN": {"name": ""Guillemins, Raiway Stn"", "latitude": 50.63333, "longitude": 5.56666, "country": "BE", "city": "Liege"},
+  "XHN": {"name": "Guillemins, Raiway Stn", "latitude": 50.63333, "longitude": 5.56666, "country": "BE", "city": "Liege"},
   "XIC": {"name": "Xichang Airport", "latitude": 27.98876455, "longitude": 102.1845480169798, "country": "CN", "city": "Xichang"},
   "XIE": {"name": "Xienglom", "latitude": 19.6199582, "longitude": 100.8121238, "country": "LA", "city": "Chaloem Phra Kiat"},
   "XIG": {"name": "Xinguara", "latitude": -6.966667, "longitude": -48.8, "country": "BR", "city": "Sao Geraldo do Araguaia"},
@@ -9801,3 +10394,4 @@
   "ZZO": {"name": "Zonalnoye", "latitude": 50.660627399999996, "longitude": 142.77230001516781, "country": "RU", "city": "Tymovskoye"},
   "ZZU": {"name": "Mzuzu", "latitude": -11.443044350000001, "longitude": 34.01193333198202, "country": "MW", "city": "Mzuzu"},
   "ZZV": {"name": "Zanesville", "latitude": 39.933334, "longitude": -82.01667, "country": "US", "city": "Zanesville"},
+}
